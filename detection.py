@@ -1,23 +1,49 @@
 #simple detection model
-#训练一张简单的图片进行物体的位置回归，通过将图片的回归效果做好后再做其它的回归效果
-#配置一下简单的回归神经网络
-
 import torch
 import torchvision
 import cv2
+import math
 
-image = cv2.imread("image/1.png")
+image = cv2.imread("data/1.png")
 image = cv2.resize(image, (224, 224))
 totensor = torchvision.transforms.ToTensor()
 image = totensor(image)
 image = torch.unsqueeze(image, 0)
+image.requires_grad = True
+
+#ground truth,[xmid, ymid, width, height]
+gt = [[0.567, 0.469, 0.206, 0.53]]
+
+#anchor, relative to the output dimension
+anchor = [[0.2, 0.5]]
+
+def iou(pred, gt):
+    pred_xmin = pred[0] - (pred[2] / 2)
+    pred_xmax = pred[0] + (pred[2] / 2)
+    pred_ymin = pred[1] - (pred[3] / 2) 
+    pred_ymax = pred[1] + (pred[3] / 2)
+    gt_xmin = gt[0] - (gt[2] / 2)
+    gt_xmax = gt[0] + (gt[2] / 2)
+    gt_ymin = gt[1] - (gt[3] / 2)
+    gt_ymax = gt[1] + (gt[3] / 2)
+    xmin = max(pred_xmin, gt_xmin)
+    xmax = min(pred_xmax, gt_xmax)
+    ymin = max(pred_ymin, gt_ymin)
+    ymax = min(pred_ymax, gt_ymax)
+    if pred_xmin > gt_xmax or pred_xmax < gt_xmin:
+        return 0
+    if pred_ymin > gt_ymax or pred_xmax < gt_ymin:
+        return 0
+    iou_area = (xmax - xmin) * (ymax - ymin)
+    iou_pred = (pred_xmax - pred_xmin) * (pred_ymax - pred_ymin)
+    iou_gt = (gt_xmax - gt_xmin) * (pred_ymax - pred_ymin)
+    return iou_area / (iou_gt + iou_pred - iou_area)
 
 #define the detection model
 from torch.nn.modules import Module
 class net(Module):
     def __init__(self):
         super(net, self).__init__()
-        #在这里配置网络的参数进行操作的进行的事情
         self.fun1 = torch.nn.Conv2d(3, 32, kernel_size = (3, 3))
         self.fun2 = torch.nn.MaxPool2d(2, 2, padding = 1)
         self.fun3 = torch.nn.Conv2d(32, 64, kernel_size = (3, 3))
@@ -40,7 +66,7 @@ class net(Module):
         self.fun20 = torch.nn.Conv2d(1024, 512, kernel_size = (1, 1))
         self.fun21 = torch.nn.Conv2d(512, 1024, kernel_size = (3, 3), padding = 1)
         self.fun22 = torch.nn.Conv2d(1024, 512, kernel_size = (1, 1))
-        self.fun23 = torch.nn.Conv2d(512, 1024, kernel_size = (3, 3), padding = 1)
+        self.fun23 = torch.nn.Conv2d(512, 6, kernel_size = (3, 3), padding = 1)
 
     def forward(self, x):
         x = self.fun1(x)
@@ -66,15 +92,51 @@ class net(Module):
         x = self.fun21(x)
         x = self.fun22(x)
         x = self.fun23(x)
-        
-        #here we define our loss, do our training 
-        print(x.shape)
-        for i in range(x.shape[0]):
-            for j in range(x.shape[2]):
-                for k in range(x.shape[3]):
-                #下边针具体的grid进行操作x[i][index][j][k]
-                
-        return x        
+        x = x.transpose(1, 3)
+       
+        #design the loss, x[batch][w][h][background, object, xmid, ymid, width, height]
+        for i in range(x.shape[0]): 
+            for j in range(x.shape[1]): 
+                for k in range(x.shape[2]): 
+                    for v in range(len(anchor)): 
+                        best_index = -1
+                        best_iou = -1
+                        #decode the predict box to relative value
+                        pred_x = (j + x[i][j][k][v * 6 + 2]) / x.shape[1]
+                        pred_y = (k + x[i][j][k][v * 6 + 3]) / x.shape[2]
+                        pred_w = math.exp(x[i][j][k][v * 6 + 4]) * anchor[v][0] / x.shape[1]
+                        pred_h = math.exp(x[i][j][k][v * 6 + 5]) * anchor[v][1] / x.shape[2]
+                        p = [pred_x, pred_y, pred_w, pred_h]
+                        #encode the anchor box
+                        anch_x = j + 0.5
+                        anch_y = k + 0.5
+                        anch_w = anchor[v][0] / x.shape[1]
+                        anch_h = anchor[v][1] / x.shape[2]
+                        #get the specific the gt box
+                        best_box = list()
+                        for g in gt:
+                            pg_iou = iou(p, g)
+                            if pg_iou > best_iou:
+                                best_iou = pg_iou
+                                best_box = g
+                        #怎么计算softmax的功能，这样连续的几个怎么计算，怎么进行这个事情
+                        y = torch.chunk(x, len(anchor), dim = 3)[v]
+                        if best_iou < 0.3:
+                            cls_tensor = y.split([2, 4], dim = 3)[0]
+                            cls_tensor = torch.nn.functional.softmax(cls_tensor, dim = 3)
+                            loss_cls = 1 - cls_tensor[i][j][k][0] 
+                            loss = loss_cls
+                        if best_iou > 0.7:
+                            cls_tensor = y.split([2, 4], dim = 3)[0]
+                            cls_tensor = torch.nn.functional.softmax(cls_tensor, dim = 3)
+                            loss_cls = 1 - cls_tensor[i][j][k][1]
+                            #encode the gt box
+                            loss_x = (torch.Tensor([best_box[0]]) - x[i][j][k][v * 6 + 2]).abs()
+                            loss_y = (torch.Tensor([best_box[1]]) - x[i][j][k][v * 6 + 3]).abs()
+                            loss_w = (torch.Tensor([best_box[2]]) - x[i][j][k][v * 6 + 4]).abs()
+                            loss_h = (torch.Tensor([best_box[3]]) - x[i][j][k][v * 6 + 5]).abs()
+                            loss = loss_cls + loss_x + loss_y + loss_w + loss_h
+        return x, loss
 
 detection = net()
 
@@ -82,8 +144,17 @@ detection = net()
 optimizer = torch.optim.SGD(detection.parameters(), lr = 0.01)
 
 #define the training
-for i in range(1):
-    loss = detection.forward(image)
+for i in range(10):
+    if i % 10 == 0:
+        torch.save(detection.state_dict(), 'data/params.pkl')
+    _, loss = detection.forward(image)
+    print(loss)
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
+    if i % 10 == 0:
+        #nms
+        i = i 
+        #display the result
+
+
