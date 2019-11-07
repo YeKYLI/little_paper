@@ -1,11 +1,11 @@
-#simple edetection model
-import sys
+#这部分方便起见的话，按照典型的models.py，train.py, test.py的文件格式进行这这部分的操作，或者到后期
+#所有函数都继承到类里边去也不是不可以，但这也是后边做的了
+#我感觉最好的方式还是每个模块分别写，然后在后边进行临时组装在一起，这样是非常简洁的
+#simple detection model
 import torch
 import torchvision
 import cv2
 import math
-from utils.box_operator import xywh2xyxy
-from utils.box_operator import nms
 
 image = cv2.imread("data/1.png")
 image = cv2.resize(image, (224, 224))
@@ -101,7 +101,7 @@ class net(Module):
         for i in range(x.shape[0]): 
             for j in range(x.shape[1]): 
                 for k in range(x.shape[2]): 
-                    for v in range(int(x.shape[3] / 6)): 
+                    for v in range(len(anchor)): 
                         best_index = -1
                         best_iou = -1
                         #decode the predict box to relative value
@@ -146,54 +146,18 @@ detection = net()
 #define the optimizer parameter 
 optimizer = torch.optim.SGD(detection.parameters(), lr = 0.01)
 
-#正好在这里写好测试框架，方便测试框架是否完善进行事情，其实这部分独立出来成为一个独立的文件会跟高会更好一些
-#define the test
-def test():
-    detection.load_state_dict(torch.load('data/params.pkl'))
-    output, _ = detection.forward(image)
-    print(output.shape)
-    #decode the output to boxes
-    boxes = list()
-    for i in range(output.shape[0]):
-        for j in range(output.shape[1]):
-            for k in range(output.shape[2]):
-                for v in range(int(output.shape[3] / 6)):
-                    v = v * 6
-                    conf = (torch.exp(output[i][j][k][v + 1]) / 
-                    (torch.exp(output[i][j][k][v]) + torch.exp(output[i][j][k][v + 1])))
-                    pred_x = (j + output[i][j][k][v * 6 + 2]) / output.shape[1]
-                    pred_y = (k + output[i][j][k][v * 6 + 3]) / output.shape[2]
-                    pred_w = torch.exp(output[i][j][k][v * 6 + 4]) * anchor[v][0] / output.shape[1]
-                    pred_h = torch.exp(output[i][j][k][v * 6 + 5]) * anchor[v][1] / output.shape[2]
-                    box = [pred_x, pred_y, pred_w, pred_h, conf]
-                    box = xywh2xyxy(box)
-                    boxes.append(box)
-    boxes = nms(boxes) 
-    for box in boxes:
-        print(box)
-    #visiualization the specific output 
-    count = 0
-    for box in boxes:
-        count += 1
-        if count > 3:
-            break
-        image = cv2.imread("data/1.png") 
-        #在图片上画线段，进行上边的上面最好的画出来
-        #注意释放！！！！！
-
 #define the training
-def train():
-    for i in range(10):
-        if i % 10 == 0:
-            torch.save(detection.state_dict(), 'data/params.pkl')
-        _, loss = detection.forward(image)
-        print(loss)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+for i in range(10):
+    if i % 10 == 0:
+        torch.save(detection.state_dict(), 'data/params.pkl')
+    _, loss = detection.forward(image)
+    print(loss)
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+    if i % 10 == 0:
+        #nms
+        i = i 
+        #display the result
 
-if __name__ == '__main__':
-    if sys.argv[1] == 'train':
-        train()
-    if sys.argv[1] == 'test':
-        test()
+
