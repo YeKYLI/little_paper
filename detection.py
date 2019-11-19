@@ -1,4 +1,6 @@
 #simple edetection model
+#从目前来看，应该是哪里的编解码我哪里写错了
+
 import sys
 import torch
 import torchvision
@@ -47,6 +49,7 @@ from torch.nn.modules import Module
 class net(Module):
     def __init__(self):
         super(net, self).__init__()
+        self.init_hyperparameter()
         self.fun1 = torch.nn.Conv2d(3, 32, kernel_size = (3, 3))
         self.fun2 = torch.nn.MaxPool2d(2, 2, padding = 1)
         self.fun3 = torch.nn.Conv2d(32, 64, kernel_size = (3, 3))
@@ -70,6 +73,10 @@ class net(Module):
         self.fun21 = torch.nn.Conv2d(512, 1024, kernel_size = (3, 3), padding = 1)
         self.fun22 = torch.nn.Conv2d(1024, 512, kernel_size = (1, 1))
         self.fun23 = torch.nn.Conv2d(512, 6, kernel_size = (3, 3), padding = 1)
+
+    def init_hyperparameter(self):
+        self.gt  = [[0.567, 0.469, 0.206, 0.53]] 
+        self.anchor = [[0.2, 0.5]]  
 
     def forward(self, x):
         x = self.fun1(x)
@@ -98,6 +105,7 @@ class net(Module):
         x = x.transpose(1, 3)
        
         #design the loss, x[batch][w][h][background, object, xmid, ymid, width, height]
+        loss = 0
         for i in range(x.shape[0]): 
             for j in range(x.shape[1]): 
                 for k in range(x.shape[2]): 
@@ -107,8 +115,8 @@ class net(Module):
                         #decode the predict box to relative value
                         pred_x = (j + x[i][j][k][v * 6 + 2]) / x.shape[1]
                         pred_y = (k + x[i][j][k][v * 6 + 3]) / x.shape[2]
-                        pred_w = math.exp(x[i][j][k][v * 6 + 4]) * anchor[v][0] / x.shape[1]
-                        pred_h = math.exp(x[i][j][k][v * 6 + 5]) * anchor[v][1] / x.shape[2]
+                        pred_w = torch.exp(x[i][j][k][v * 6 + 4]) * self.anchor[v][0] / x.shape[1]
+                        pred_h = torch.exp(x[i][j][k][v * 6 + 5]) * self.anchor[v][1] / x.shape[2]
                         p = [pred_x, pred_y, pred_w, pred_h]
                         #encode the anchor box
                         anch_x = j + 0.5
@@ -128,17 +136,17 @@ class net(Module):
                             cls_tensor = y.split([2, 4], dim = 3)[0]
                             cls_tensor = torch.nn.functional.softmax(cls_tensor, dim = 3)
                             loss_cls = 1 - cls_tensor[i][j][k][0] 
-                            loss = loss_cls
+                            loss += loss_cls
                         if best_iou > 0.7:
                             cls_tensor = y.split([2, 4], dim = 3)[0]
-                            cls_tensor = torch.nn.functional.softmax(cls_tensor, dim = 3)
+                            cls_tensor += torch.nn.functional.softmax(cls_tensor, dim = 3)
                             loss_cls = 1 - cls_tensor[i][j][k][1]
                             #encode the gt box
                             loss_x = (torch.Tensor([best_box[0]]) - x[i][j][k][v * 6 + 2]).abs()
                             loss_y = (torch.Tensor([best_box[1]]) - x[i][j][k][v * 6 + 3]).abs()
                             loss_w = (torch.Tensor([best_box[2]]) - x[i][j][k][v * 6 + 4]).abs()
                             loss_h = (torch.Tensor([best_box[3]]) - x[i][j][k][v * 6 + 5]).abs()
-                            loss = loss_cls + loss_x + loss_y + loss_w + loss_h
+                            loss += loss_cls + loss_x + loss_y + loss_w + loss_h
         return x, loss
 
 detection = net()
@@ -146,13 +154,13 @@ detection = net()
 #define the optimizer parameter 
 optimizer = torch.optim.SGD(detection.parameters(), lr = 0.01)
 
-#正好在这里写好测试框架，方便测试框架是否完善进行事情，其实这部分独立出来成为一个独立的文件会跟高会更好一些
 #define the test
+#misaka的那张图调试出来，那张图调试出来，
 def test():
     detection.load_state_dict(torch.load('data/params.pkl'))
     output, _ = detection.forward(image)
     print(output.shape)
-    #decode the output to boxes
+    #decode the output to boxesww
     boxes = list()
     for i in range(output.shape[0]):
         for j in range(output.shape[1]):
@@ -172,18 +180,20 @@ def test():
     for box in boxes:
         print(box)
     #visiualization the specific output 
+    misaka = cv2.imread("data/1.png")
     count = 0
     for box in boxes:
         count += 1
-        if count > 3:
+        if count > 20:
             break
-        image = cv2.imread("data/1.png") 
-        #在图片上画线段，进行上边的上面最好的画出来
-        #注意释放！！！！！
+        print(box)
+        cv2.rectangle(misaka, (int(box[0] * 500), int(box[1] * 500)), (int(box[2] * 500), int(box[3] * 500)), (255, 0, 0), 4)
+    cv2.imshow("misake", misaka)
+    cv2.waitKey() 
 
 #define the training
 def train():
-    for i in range(10):
+    for i in range(100):
         if i % 10 == 0:
             torch.save(detection.state_dict(), 'data/params.pkl')
         _, loss = detection.forward(image)
@@ -197,3 +207,4 @@ if __name__ == '__main__':
         train()
     if sys.argv[1] == 'test':
         test()
+ 
